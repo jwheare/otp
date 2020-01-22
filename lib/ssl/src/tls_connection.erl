@@ -238,12 +238,11 @@ next_record(#state{connection_env = #connection_env{negotiated_version = Version
         {Record, ConnectionStates} when Acc =:= [] ->
             %% Singelton non-?APPLICATION_DATA record - deliver
             next_record_done(State, CipherTexts, ConnectionStates, Record);
-        {_Record, _ConnectionStates_to_forget} ->
+        {Record, ConnectionStates} ->
             %% Not ?APPLICATION_DATA but we have accumulated fragments
             %% -> build an ?APPLICATION_DATA record with concatenated fragments
-            %%    and forget about decrypting this record - we'll decrypt it again next time
-            next_record_done(State, [CT|CipherTexts], ConnectionStates0,
-                             #ssl_tls{type = ?APPLICATION_DATA, fragment = iolist_to_binary(lists:reverse(Acc))});
+            next_record_done(State, CipherTexts, ConnectionStates,
+                             [#ssl_tls{type = ?APPLICATION_DATA, fragment = iolist_to_binary(lists:reverse(Acc))}, Record]);
         #alert{} = Alert ->
             Alert
     end.
@@ -266,10 +265,19 @@ next_event(StateName, no_record, State0, Actions) ->
             ssl_connection:handle_normal_shutdown(Alert, StateName, State0),
 	    {stop, {shutdown, own_alert}, State0}
     end;
-next_event(StateName,  #ssl_tls{} = Record, State, Actions) ->
-    {next_state, StateName, State, [{next_event, internal, {protocol_record, Record}} | Actions]};
-next_event(StateName,  #alert{} = Alert, State, Actions) ->
-    {next_state, StateName, State, [{next_event, internal, Alert} | Actions]}.
+next_event(StateName, Records, State, Actions) when is_list(Records) ->
+    {next_state, StateName, State, next_record_events(Records) ++ Actions};
+next_event(StateName, Record, State, Actions) ->
+    {next_state, StateName, State, [next_record_event(Record) | Actions]}.
+
+next_record_events(Records) ->
+    [next_record_event(Record) || Record <- Records].
+
+next_record_event(#ssl_tls{} = Record) ->
+    {next_event, internal, {protocol_record, Record}};
+next_record_event(#alert{} = Alert) ->
+    {next_event, internal, Alert}.
+
 
 %%% TLS record protocol level application data messages 
 handle_protocol_record(#ssl_tls{type = ?APPLICATION_DATA, fragment = Data}, StateName, 
